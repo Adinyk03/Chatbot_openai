@@ -1,40 +1,44 @@
 import openai
 from pymongo import MongoClient
+from config import collection_var, client_var, db_var
+from alphanum import generate
+
+
+# generates 16 digit alphanumeric code
+def generate_id():
+    return generate(16)
 
 
 # MongoDB client Initialization
 def chat_finder(user_prompt):
-    client = MongoClient("mongodb://localhost:27017/")
-    db = client["chat_hist"]
-    collection = db["chats"]
+    client = MongoClient(client_var)
+    db = client[db_var]
+    collection = db[collection_var]
     x = collection.find_one({"User Prompt": user_prompt})
     return x
 
 
 def chat_update(chat_id, chat_document):
-    client = MongoClient("mongodb://localhost:27017/")
-    db = client["chat_hist"]
-    collection = db["chats"]
-    y = collection.update_one({"_id": chat_id}, {"$set": chat_document})
+    client = MongoClient(client_var)
+    db = client[db_var]
+    collection = db[collection_var]
+    y = collection.update_one({"_id": chat_id}, {"$set": chat_document}, upsert=True)
     return y
 
 
-def chat_insert(chat_message):
-    client = MongoClient("mongodb://localhost:27017/")
-    db = client["chat_hist"]
-    collection = db["chats"]
-    z = collection.insert_one(chat_message)
-    return z
-
-
-def chat_response(prompt, conversation_hist=None):
+def chat_response(prompt, conversation_hist=None, session_id=None):
     # Define a system message
     if conversation_hist is None:
         conversation_hist = []
     system_message = {"role": "system", "content": "You can give me the answers"}
+    sess_id = None
 
-    # Combine conversation history with user's prompt
-    messages = conversation_hist + [system_message, {"role": "user", "content": f"{prompt}"}]
+    if session_id is not None:
+        sess_id = {"role": "assistant", "content": f"session id - {session_id}"}
+        messages = conversation_hist + [system_message, sess_id, {"role": "user", "content": f"{prompt}"}]
+    else:
+        # Combine conversation history with the user's prompt
+        messages = conversation_hist + [system_message, {"role": "user", "content": f"{prompt}"}]
 
     # Generate a response from OpenAI
     response = openai.ChatCompletion.create(
@@ -43,7 +47,9 @@ def chat_response(prompt, conversation_hist=None):
         temperature=1,
     )
 
-    # Create user and assistant messages
+    if session_id and sess_id is not None:
+        conversation_hist.append(sess_id)
+
     user_message = {"role": "user", "content": prompt}
     assistant_message = {"role": "assistant", "content": response.choices[0].message.content}
 
@@ -54,21 +60,23 @@ def chat_response(prompt, conversation_hist=None):
     return response.choices[0].message.content, conversation_hist
 
 
-def chat_exist(chat_document, sys_prompt):
+def new_chat(object_id, user_prompt, sys_prompt, conversation_history, session_id):
+    response1, conversation_history = chat_response(sys_prompt, conversation_history)
+    chat_message = {
+        "_id": object_id,
+        "User Prompt": user_prompt,
+        "assistant response": response1,
+        "first session id": session_id,
+        "conversation history": conversation_history
+    }
+    chat_update(object_id, chat_message)
+    return response1, str(object_id)
+
+
+def chat_exist(chat_document, sys_prompt, session_id=None):
     chat_id = chat_document["_id"]
     conversation_history = chat_document.get("conversation_history", [])
-    response1, conversation_history = chat_response(sys_prompt, conversation_history)
+    response1, conversation_history = chat_response(sys_prompt, conversation_history, session_id)
     chat_document["conversation_history"] = conversation_history
     chat_update(chat_id, chat_document)
     return response1
-
-
-def new_chat(user_prompt, sys_prompt, conversation_history):
-    response1, conversation_history = chat_response(sys_prompt, conversation_history)
-    chat_message = {
-        "User Prompt": user_prompt,
-        "assistant_response": response1,
-        "conversation_history": conversation_history
-    }
-    result = chat_insert(chat_message)
-    return response1, str(result.inserted_id)
